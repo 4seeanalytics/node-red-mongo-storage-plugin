@@ -1,146 +1,93 @@
-const when = require('when');
-const Promise = when.promise;
-const MongoDB = require('mongodb');
-const MongoClient = MongoDB.MongoClient;
+const { MongoClient } = require('mongodb');
 
-let MongoHandler = class MongoHandler {
+class MongoHandler {
   constructor(url, databaseName) {
     this.url = url;
-    this.dbInstace = null;
+    this.dbInstance = null;
     this.client = null;
     this.databaseName = databaseName;
   }
 
-  connect() {
-    return Promise((resolve, reject) => {
-      MongoClient.connect(this.url, (err, client) => {
-        if (err) {
-          reject(err);
-        }
-
-        this.client = client;
-        this.dbInstace = client.db(this.databaseName, {useUnifiedTopology: true });
-        resolve();
+  async connect() {
+    try {
+      // Connect to MongoDB with the appropriate options (useUnifiedTopology and useNewUrlParser)
+      this.client = await MongoClient.connect(this.url, { 
+        useUnifiedTopology: true, 
+        useNewUrlParser: true 
       });
-    })
-  }  
-
-
-  
-  findAll(collectionName) {
-    return Promise((resolve, reject) => {
-      try {   
-        this.dbInstace.collection(collectionName)
-          .find({}).toArray(function (err, storageDocuments) {
-            if (err) {
-                reject(err);
-            }
-            if (storageDocuments == null) {
-                resolve({});
-            } else {                                
-              resolve(storageDocuments);
-            }
-        });
-      } catch (ex) {
-        reject(ex);
-      }
-    });
-  }
-
-
-  saveAll(collectionName, objects) {
-    return Promise(async (resolve, reject) => {
-      try {           
-        await this.dropCollectionIfExists(collectionName);        
-        
-        if(objects.length > 0){
-        let bulk = this.dbInstace.collection(collectionName).initializeUnorderedBulkOp();          
-          objects.forEach((obj) => {
-            bulk.insert(obj);
-          });                  
-          bulk.execute();
-        }
-
-        resolve();        
-      } catch (ex) {
-        reject(ex);
-      }
-    });
-  }
-
-  async dropCollectionIfExists(collectionName){
-    let collectionList= await this.dbInstace.listCollections({
-      name: collectionName
-    }).toArray();
-
-    if(collectionList.length !== 0){
-      await this.dbInstace.collection(collectionName).drop();
+      this.dbInstance = this.client.db(this.databaseName);
+    } catch (err) {
+      throw new Error(`Failed to connect to MongoDB: ${err.message}`);
     }
   }
 
-  findOneByPath(collectionName, path) {
-    return Promise((resolve, reject) => {
-      try {   
-        this.dbInstace.collection(collectionName)
-          .findOne({path : path}, function (err, storageDocument) {
-            if (err) {
-                reject(err);
-            }
-            if (storageDocument == null) {
-                resolve({});
-            } else {
-                if (storageDocument.body) {
-                    if (typeof(storageDocument.body) == "string") {
-                        resolve(JSON.parse(storageDocument.body));
-                    } else {
-                        resolve(storageDocument.body);
-                     }
-                } else {
-                    resolve({});
-                }
-            }
-        });
-      } catch (ex) {
-        reject(ex);
-      }
-    });
+  // Find all documents in a collection
+  async findAll(collectionName) {
+    try {
+      const documents = await this.dbInstance.collection(collectionName).find({}).toArray();
+      return documents || [];
+    } catch (err) {
+      throw new Error(`Error finding documents in ${collectionName}: ${err.message}`);
+    }
   }
 
-  saveOrUpdateByPath(collectionName, path, meta, body) {
-    return Promise((resolve, reject) => {
-      try {
-        this.dbInstace.collection(collectionName)
-          .findOne({              
-              path: path
-            },
-            function (err, storageDocument) {
-              if (err) {
-                reject(err);
-              } else {
-                if (storageDocument == null) {
-                  storageDocument = {                    
-                    path: path
-                  };
-                }
+  // Save all documents in a collection, replacing existing ones
+  async saveAll(collectionName, objects) {
+    try {
+      // Drop the collection if it exists before saving
+      await this.dropCollectionIfExists(collectionName);
 
-                storageDocument.meta = JSON.stringify(meta);
-                storageDocument.body = JSON.stringify(body);
-
-                storageDocument.save(function (err, storageDocument) {
-                  if (err) {
-                    reject(err);
-                  } else {
-                    resolve();
-                  }
-                });
-              }
-            }
-          );
-      } catch (ex) {
-        reject(ex);
+      if (objects.length > 0) {
+        const bulk = this.dbInstance.collection(collectionName).initializeUnorderedBulkOp();
+        objects.forEach((obj) => bulk.insert(obj));
+        await bulk.execute();
       }
-    });
+
+    } catch (err) {
+      throw new Error(`Error saving documents to ${collectionName}: ${err.message}`);
+    }
   }
-};
+
+  // Drop a collection if it exists
+  async dropCollectionIfExists(collectionName) {
+    const collectionList = await this.dbInstance.listCollections({ name: collectionName }).toArray();
+    if (collectionList.length !== 0) {
+      await this.dbInstance.collection(collectionName).drop();
+    }
+  }
+
+  // Find a single document by its path
+  async findOneByPath(collectionName, path) {
+    try {
+      const document = await this.dbInstance.collection(collectionName).findOne({ path });
+      if (document) {
+        return document.body ? JSON.parse(document.body) : {};
+      }
+      return {};
+    } catch (err) {
+      throw new Error(`Error finding document with path ${path} in ${collectionName}: ${err.message}`);
+    }
+  }
+
+  // Save or update a document by its path
+  async saveOrUpdateByPath(collectionName, path, meta, body) {
+    try {
+      let storageDocument = await this.dbInstance.collection(collectionName).findOne({ path });
+      
+      if (!storageDocument) {
+        storageDocument = { path };
+      }
+
+      storageDocument.meta = JSON.stringify(meta);
+      storageDocument.body = JSON.stringify(body);
+
+      // MongoDB save equivalent for updating or inserting
+      await this.dbInstance.collection(collectionName).replaceOne({ path }, storageDocument, { upsert: true });
+
+    } catch (err) {
+      throw new Error(`Error saving or updating document with path ${path} in ${collectionName}: ${err.message}`);
+    }
+  }
+}
 
 module.exports = MongoHandler;
